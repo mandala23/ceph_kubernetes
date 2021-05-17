@@ -1,0 +1,28 @@
+---
+
+- name: get hosts from facts
+  set_fact:
+    worker: "{{ hostvars|dict2items|json_query('[].value[].ansible_hostname') }}"
+  run_once: true
+
+- name: Get all non-systems disks
+  shell: lsblk -p | egrep -v '(sda|mapper|sr0|rbd|NAME)' | awk '{print $1}'
+  register: disks
+
+- name: Instantiate OSD Disks and start Ceph OSD
+  shell: ceph-volume lvm batch --bluestore "{{ item }}" --crush-device-class nvme --yes
+  with_items: "{{ disks.stdout_lines }}"
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: Instantiate OSD Disks and start Ceph OSD
+  shell: ceph-volume lvm batch --bluestore "{{ item }}" --crush-device-class nvme --yes
+  with_items: "{{ disks.stdout_lines }}"
+  run_once: yes
+  delegate_to: "{{ worker[1] }}"
+
+- name: Instantiate OSD Disks and start Ceph OSD
+  shell: ceph-volume lvm batch --bluestore "{{ item }}" --crush-device-class nvme --yes
+  with_items: "{{ disks.stdout_lines }}"
+  run_once: yes
+  delegate_to: "{{ worker[2] }}"

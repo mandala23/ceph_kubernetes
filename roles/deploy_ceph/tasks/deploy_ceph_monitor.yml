@@ -1,0 +1,221 @@
+---
+ 
+- name: get hosts from facts
+  set_fact:
+    worker: "{{ hostvars|dict2items|json_query('[].value[].ansible_hostname') }}"
+  run_once: true
+
+- name: get private ip of hosts
+  set_fact:
+    ipl: "{{ hostvars|dict2items|json_query('[].value[].ansible_ens256.ipv4[].address') }}"
+  run_once: true
+
+- name: get public ip of hosts
+  set_fact:
+    ip_public_pool: "{{ hostvars|dict2items|json_query('[].value[].ansible_default_ipv4[].address') }}"
+  run_once: yes
+
+- name: get private network
+  set_fact:
+    private_network: "{{ hostvars[inventory_hostname]['ansible_ens256']['ipv4']['network'] }}"
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+
+- name: Create Monitor Keyring
+  shell: ceph-authtool --create-keyring /etc/ceph/ceph.mon.keyring --gen-key -n mon. --cap mon 'allow *'
+  args:
+    creates: /etc/ceph/ceph.mon.keyring
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: Create Admin Keyring
+  shell: ceph-authtool --create-keyring /etc/ceph/ceph.client.admin.keyring --gen-key -n client.admin --cap mon 'allow *' --cap osd 'allow *' --cap mds 'allow *' --cap mgr 'allow *'
+  args:
+    creates: /etc/ceph/ceph.client.admin.keyring
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: Create OSD Keyring
+  shell: ceph-authtool --create-keyring /var/lib/ceph/bootstrap-osd/ceph.keyring --gen-key -n client.bootstrap-osd --cap mon 'profile bootstrap-osd' --cap mgr 'allow r'
+  args:
+    creates: /var/lib/ceph/bootstrap-osd/ceph.keyring 
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: Import Admin Keyring in Monitor Keyring
+  shell: ceph-authtool /etc/ceph/ceph.mon.keyring --import-keyring /etc/ceph/ceph.client.admin.keyring
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+  
+- name: Import OSD Keyring in Monitor Keyring
+  shell: ceph-authtool /etc/ceph/ceph.mon.keyring --import-keyring /var/lib/ceph/bootstrap-osd/ceph.keyring
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: Change ownership of Monitor and Admin Keyring
+  file:
+    path: "{{ item }}"
+    owner: ceph
+    group: ceph
+    mode: '0644'
+  with_items:
+    - /etc/ceph/ceph.mon.keyring
+    - /etc/ceph/ceph.client.admin.keyring
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: Generate uuid for Ceph Cluster
+  shell: uuidgen
+  register: uuid
+  run_once: yes 
+  delegate_to: "{{ worker[0] }}"
+
+- name: Generate MonitorMap for Ceph Cluster
+  shell: monmaptool --create --add mon."{{ worker[0] }}"  "{{ ip_public_pool[0] }}":3300 --add mon."{{ worker[1] }}" "{{ ip_public_pool[1] }}":3300 --add mon."{{ worker[2] }}" "{{ ip_public_pool[2] }}":3300 --fsid "{{ uuid.stdout }}" --clobber /etc/ceph/monmap
+  args:
+    creates: /etc/ceph/monmap
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+
+- name: get netmask
+  shell: grep PREFIX /etc/sysconfig/network-scripts/ifcfg-ens256 | cut -d "=" -f2
+  register: netmask
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: populate ceph.conf on all nodes
+  shell: |
+    cat <<EOF > /etc/ceph/ceph.conf
+    [global]
+    fsid = {{ uuid.stdout }}
+    mon_initial_members = {{ worker[0] }}
+    mon_host = {{ ip_public_pool[0] }}:3300, {{ ip_public_pool[1] }}:3300, {{ ip_public_pool[2] }}:3300
+    public network = {{ ip_public_pool[0] }}/32, {{ ip_public_pool[1] }}/32, {{ ip_public_pool[2] }}/32
+    cluster_network = {{ private_network }}/{{ netmask.stdout }}
+    auth_cluster_required = cephx
+    auth_service_required = cephx
+    auth_client_required = cephx
+    ms_bind_msgr2 = true
+    ms_cluster_mode = secure
+    ms_service_mode = secure
+    ms_client_mode = secure
+    ms_mon_cluster_mode = secure
+    ms_mon_service_mode = secure
+    ms_mon_client_mode = secure
+    osd_journal_size = 1024
+    osd_pool_default_size = 3
+    osd_pool_default_min size = 2
+    osd_crush_chooseleaf_type = 1
+
+    [mon]
+    mgr_initial_modules = dashboard balancer
+    mon_compact_on_start = true
+
+    [mon.{{ worker[0] }}]
+    host = {{ worker[0] }}
+    mon_addr = {{ ip_public_pool[0] }}:3300
+
+    [mon.{{ worker[1] }}]
+    host = {{ worker[1] }}
+    mon_addr = {{ ip_public_pool[1] }}:3300
+
+    [mon.{{ worker[2] }}]
+    host = {{ worker[2] }}
+    mon_addr = {{ ip_public_pool[2] }}:3300
+
+    [mds.{{ worker[0] }}]
+    host = {{ worker[0] }}
+
+    [mds.{{ worker[1] }}]
+    host = {{ worker[1] }}
+
+    [mds.{{ worker[2] }}]
+    host = {{ worker[2] }}
+
+    [mgr]
+    client_mount_uid = 0
+    client_mount_gid = 0
+    EOF
+  args:
+    creates: /etc/ceph/ceph.conf
+    
+
+- name : Copy Admin Keyring to others nodes
+  copy:
+    src: /etc/ceph/ceph.client.admin.keyring
+    dest: /etc/ceph/ceph.client.admin.keyring
+    owner: ceph
+    group: ceph
+    mode: '0600'
+    force: yes
+
+
+- name : Copy Monitor Keyring to others nodes
+  copy:
+    src: /etc/ceph/ceph.mon.keyring
+    dest: /etc/ceph/ceph.mon.keyring
+    owner: ceph
+    group: ceph
+    mode: '0600'
+    force: yes
+
+- name : Copy Monitor Map to others nodes
+  copy:
+    src: /etc/ceph/monmap
+    dest: /etc/ceph/monmap
+    owner: ceph
+    group: ceph
+    mode: '0644'
+    force: yes
+
+- name : Copy Bootstrap OSD Keyring to others nodes
+  copy:
+    src: /var/lib/ceph/bootstrap-osd/ceph.keyring
+    dest: /var/lib/ceph/bootstrap-osd/ceph.keyring
+    owner: ceph
+    group: ceph
+    force: yes
+
+- name: Initialize Ceph Cluster on all nodes
+  shell: ceph-mon --cluster ceph --mkfs -i "{{ ansible_hostname }}" --monmap /etc/ceph/monmap --keyring /etc/ceph/ceph.mon.keyring
+  args:
+    creates: "/var/lib/ceph/mon/ceph-{{ ansible_hostname }}"
+- pause: 
+    seconds: 10
+
+
+- name: Create ceph-admin directory on all nodes
+  file:
+    path: "/var/lib/ceph/mon/ceph-{{ ansible_hostname }}"
+    state: directory
+    recurse: yes
+    owner: ceph
+    group: ceph
+  
+- name: Change ownership of Ceph directories
+  file:
+    path: /var/lib/ceph/bootstrap-osd
+    state: directory
+    recurse: yes
+    owner: ceph
+    group: ceph
+    mode: '0644'
+
+- name: Start Ceph on all nodes
+  systemd:
+    name: "ceph-mon@{{ ansible_hostname }}"
+    state: started
+    enabled: yes
+    masked: no
+    
+
+- name: Enable Ceph Msgrv2 on all nodes
+  shell: ceph mon enable-msgr2
+
+- name: Enable Placement Groups autoscale module
+  shell: ceph mgr module enable pg_autoscaler
+  run_once: true
+  delegate_to: "{{ worker[0] }}"
+

@@ -1,0 +1,13 @@
+---
+
+- include_tasks: install_ceph_packages.yml
+
+- include_tasks: deploy_ceph_monitor.yml
+
+- include_tasks: deploy_ceph_mgr.yml
+
+- include_tasks: deploy_ceph_osd.yml
+
+- include_tasks: deploy_ceph_mds.yml
+
+- include_tasks: instantiate_pool_block_device.yml

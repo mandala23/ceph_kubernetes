@@ -1,0 +1,84 @@
+---
+
+- name: get hosts from facts
+  set_fact:
+    worker: "{{ hostvars|dict2items|json_query('[].value[].ansible_hostname') }}"
+  run_once: true
+
+- name: get public ip of hosts
+  set_fact:
+    ip_public_pool: "{{ hostvars|dict2items|json_query('[].value[].ansible_default_ipv4[].address') }}"
+  run_once: yes
+
+
+- name: Create Manager Keyring for all nodes
+  shell: ceph auth get-or-create mgr."{{ ansible_hostname }}"  mon 'allow profile mgr' osd 'allow *' mds 'allow *' > /etc/ceph/ceph.mgr.admin.keyring
+  args:
+    creates: /etc/ceph/ceph.mgr.admin.keyring
+
+- name: Create ceph-mgr directory on all nodes
+  file:
+    path: "/var/lib/ceph/mgr/ceph-{{ ansible_hostname }}"
+    state: directory
+    owner: ceph
+    group: ceph
+
+- name : Copy Manager Keyring to ceph-mgr directory
+  copy:
+    src: /etc/ceph/ceph.mgr.admin.keyring
+    dest: "/var/lib/ceph/mgr/ceph-{{ ansible_hostname }}/keyring"
+    remote_src: yes
+    owner: ceph
+    group: ceph
+    mode: '0600'
+    force: yes
+
+- name: Change ownership of Ceph Manager Keyring
+  file:
+    path: /etc/ceph/ceph.mgr.admin.keyring
+    state: file
+    owner: ceph
+    group: ceph
+
+- name: Change ownership of Ceph Manager Directory
+  file:
+    path: "/var/lib/ceph/mgr/ceph-{{ ansible_hostname }}"
+    state: directory
+    recurse: yes
+    owner: ceph
+    group: ceph
+
+
+- name: Start Ceph Manager on all nodes
+  systemd:
+    name: "ceph-mgr@{{ ansible_hostname }}"
+    state: started
+    enabled: yes
+    masked: no
+
+- name: Enable Dashboard module
+  shell: ceph mgr module enable dashboard --force
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+  ignore_errors: yes
+
+- pause:
+    seconds: 30
+
+- name: Create self-signed certificate for Dashboard
+  shell: ceph dashboard create-self-signed-cert
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: check if Ceph-Admin user already exists
+  shell: ceph dashboard ac-user-show | grep ceph-admin
+  register: user_created
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+  ignore_errors: yes
+
+- name: Create Administrator User for Ceph Dashboard
+  shell: ceph dashboard ac-user-create ceph-admin "{{ ceph_dashboard_password }}" administrator
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+  when: user_created.rc == 1

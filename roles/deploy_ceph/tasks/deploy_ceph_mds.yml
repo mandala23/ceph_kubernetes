@@ -1,0 +1,103 @@
+---
+
+- name: get hosts from facts
+  set_fact:
+    worker: "{{ hostvars|dict2items|json_query('[].value[].ansible_hostname') }}"
+  run_once: true
+
+- name: get public ip of hosts
+  set_fact:
+    ip_public_pool: "{{ hostvars|dict2items|json_query('[].value[].ansible_default_ipv4[].address') }}"
+  run_once: yes
+
+- name: Create ceph MDS directory on all nodes
+  file:
+    path: "/var/lib/ceph/mds/ceph-{{ ansible_hostname }}"
+    state: directory
+    recurse: yes
+    owner: ceph
+    group: ceph
+
+- name: Create MDS Keyring
+  shell: ceph-authtool --create-keyring "/var/lib/ceph/mds/ceph-{{ ansible_hostname }}/keyring" --gen-key -n "mds.{{ ansible_hostname }}"
+  args:
+    creates: "/var/lib/ceph/mds/ceph-{{ ansible_hostname }}/keyring"
+
+- name: Change ownership of Ceph MDS Directory
+  file:
+    path: "/var/lib/ceph/mds/ceph-{{ ansible_hostname }}"
+    state: directory
+    recurse: yes
+    owner: ceph
+    group: ceph
+
+- name: Add appropriate capabilities to Ceph MDS Keyring
+  shell: ceph auth add "mds.{{ ansible_hostname }}" osd "allow rwx" mds "allow" mon "allow profile mds" -i "/var/lib/ceph/mds/ceph-{{ ansible_hostname }}/keyring"
+
+- name: Start Ceph MDS on all nodes
+  systemd:
+    name: "ceph-mds@{{ ansible_hostname }}"
+    state: started
+    enabled: yes
+    masked: no
+
+- pause:
+    seconds: 30
+
+- name: Evaluate if CephFS Pool is already present
+  shell: ceph osd pool ls |  grep cephfs_data
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+  register: ceph_fs_pool
+  ignore_errors: yes
+
+- name: Evaluate if CephFS Metadata Pool is already present
+  shell: ceph osd pool ls |  grep cephfs_metadata
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+  register: ceph_fs_metadata_pool
+  ignore_errors: yes
+
+- name: Create new CephFS Pool
+  shell: ceph osd pool create cephfs_data replicated --autoscale-mode=on
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+  when:  ceph_fs_pool.rc  == 1
+
+- name: Create new CephFS Metadata Pool
+  shell: ceph osd pool create cephfs_metadata replicated --autoscale-mode=on
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+  when:  ceph_fs_metadata_pool.rc  == 1
+
+- name: Create new CephFS Filesystem from Pools
+  shell: ceph fs new cephfs cephfs_metadata cephfs_data
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+  when: ceph_fs_pool.rc == 1  and ceph_fs_metadata_pool.rc == 1
+
+- name: Set Max MDS Daemons
+  shell: ceph fs set cephfs max_mds 2
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+  when: ceph_fs_pool.rc == 1  and ceph_fs_metadata_pool.rc == 1
+
+- name: Export Ceph Client Keyring For CephFS mount
+  shell: ceph-authtool -p /etc/ceph/ceph.client.admin.keyring > /root/admin.key
+  args:
+    creates: /root/admin.key
+
+- name: Create CephFS local mount Directory
+  file:
+    path: /mnt/ceph
+    state: directory
+    mode: '0755'
+
+- name: Update fstab on all nodes and mount CephFS
+  mount:
+    path: /mnt/ceph
+    src: "{{ ip_public_pool[0] }}:6789,{{ ip_public_pool[1] }}:6789,{{ ip_public_pool[2] }}:6789:/"
+    fstype: ceph
+    opts: name=admin,secretfile=/root/admin.key,noatime,_netdev
+    state: mounted
+

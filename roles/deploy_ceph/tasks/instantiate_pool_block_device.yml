@@ -1,0 +1,36 @@
+---
+
+- name: get hosts from facts
+  set_fact:
+    worker: "{{ hostvars|dict2items|json_query('[].value[].ansible_hostname') }}"
+  run_once: true
+
+- name: Check if Kubernetes Block Device already exists
+  shell: ceph osd pool ls | grep kubernetes_blockdevice
+  register: pool_created
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+  ignore_errors: yes
+
+- name: Create Kubernetes Block Device
+  shell: ceph osd pool create kubernetes_blockdevice
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+  when: pool_created.rc == 1
+
+- name: Initiate Kubernetes Block Device
+  shell: rbd pool init kubernetes_blockdevice
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+  when: pool_created.rc == 1
+
+- name: Set PlacementGroup autoscale
+  shell: ceph osd pool set kubernetes_blockdevice pg_autoscale_mode on
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+  when: pool_created.rc == 1
+
+
+- name: Create Keyring for Ceph Container Storage Interface
+  shell: ceph auth get-or-create client.kubernetes mon 'profile rbd' osd 'profile rbd pool=kubernetes_blockdevice' mgr 'profile rbd pool=kubernetes_blockdevice'  > /etc/ceph/ceph.rbd.admin.keyring
+  when: pool_created.rc == 1

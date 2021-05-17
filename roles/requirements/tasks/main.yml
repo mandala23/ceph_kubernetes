@@ -1,0 +1,77 @@
+---
+
+- name: Add Ceph Octopus Repo
+  yum:
+    name: centos-release-ceph-octopus
+    state: present
+
+- name: Add Kubernetes Repositories
+  yum_repository:
+    name: Kubernetes
+    description: RPM Google Cloud Kubernetes Repo
+    baseurl: https://packages.cloud.google.com/yum/repos/kubernetes-el7-$basearch
+    gpgcheck: yes
+    enabled: yes
+    repo_gpgcheck: yes
+    gpgkey:
+      - https://packages.cloud.google.com/yum/doc/yum-key.gpg
+      - https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
+    exclude:
+      - kubelet
+      - kubeadm
+      - kubectl
+
+- name: Add EPEL Repository
+  yum:
+    name: epel-release
+    state: present
+
+- name: Install Chrony
+  yum:
+    name: chrony
+    state: present
+
+- name: install Systems Tools Group
+  yum:
+    name: "@System Tools"
+    state: present
+
+- name: Install additional system packages
+  yum:
+    name: "{{ packages }}"
+    state: present
+  vars:
+    packages:
+      - strace
+      - net-tools
+      - sysstat
+      - nmap-ncat
+      - iftop
+      - iotop
+      - blktrace
+      - ethtool
+      - perf
+      - htop
+      - mlocate
+      - tcpdump
+      - bind-utils
+
+- name: Stop and disable firewalld
+  systemd:
+    name: firewalld
+    state: stopped
+    enabled: no
+    masked: yes
+
+- name: start and enable chronyd
+  systemd:
+    name: chronyd
+    state: started
+    enabled: yes
+
+- name: Configure Chrony
+  template:
+    src: 'chrony.conf.j2'
+    dest: '/etc/chrony.conf'
+  notify:
+    - restart_chrony

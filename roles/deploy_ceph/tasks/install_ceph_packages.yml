@@ -1,0 +1,16 @@
+- name: Install Ceph Octopus packages
+  yum:
+    name: "{{ packages }}"
+    state: present
+  vars:
+    packages:
+      - ceph-15.2.9
+      - ceph-grafana-dashboards-15.2.9
+      - ceph-common-15.2.9
+      - ceph-mgr-modules-core-15.2.9
+      - ceph-osd-15.2.9
+      - ceph-mgr-15.2.9
+      - ceph-mgr-dashboard-15.2.9
+      - ceph-mds-15.2.9
+      - ceph-mon-15.2.9
+      - ceph-base-15.2.9
