@@ -1,0 +1,7 @@
+---
+
+- include_tasks: configure_haproxy_keepalived.yml
+
+- include_tasks: install_docker_and_kubernetes.yml
+
+- include_tasks: bootstrap_kubernetes.yml

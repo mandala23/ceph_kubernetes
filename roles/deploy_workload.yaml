@@ -1,0 +1,4 @@
+---
+- hosts: centos-01
+  roles:
+    - deploy_workload

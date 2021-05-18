@@ -1,0 +1,30 @@
+---
+apiVersion: v1
+kind: ConfigMap
+data:
+  config.json: |-
+    {
+      "vault-tokens-test": {
+          "encryptionKMSType": "vaulttokens",
+          "vaultAddress": "http://vault.default.svc.cluster.local:8200",
+          "vaultBackendPath": "secret/",
+          "vaultTLSServerName": "vault.default.svc.cluster.local",
+          "vaultCAVerify": "false",
+          "tenantConfigName": "ceph-csi-kms-config",
+          "tenantTokenName": "ceph-csi-kms-token",
+          "tenants": {
+              "my-app": {
+                  "vaultAddress": "https://vault.example.com",
+                  "vaultCAVerify": "true"
+              },
+              "an-other-app": {
+                  "tenantTokenName": "storage-encryption-token"
+              }
+          }
+      },
+      "secrets-metadata-test": {
+          "encryptionKMSType": "metadata"
+      }
+    }
+metadata:
+  name: ceph-csi-encryption-kms-config

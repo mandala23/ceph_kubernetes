@@ -16,15 +16,16 @@
     gpgkey:
       - https://packages.cloud.google.com/yum/doc/yum-key.gpg
       - https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
-    exclude:
-      - kubelet
-      - kubeadm
-      - kubectl
 
 - name: Add EPEL Repository
   yum:
     name: epel-release
     state: present
+
+- name: Add Docker CE Repository
+  copy:
+    src: docker-ce.repo
+    dest: /etc/yum.repos.d/
 
 - name: Install Chrony
   yum:
@@ -55,6 +56,45 @@
       - mlocate
       - tcpdump
       - bind-utils
+      - ipvsadm
+
+- name: Add modules to load for k8s
+  copy:
+    src: ipvs_modules.conf
+    dest: /etc/modules-load.d/
+
+- name: Add modules to load for ipvs 
+  copy:
+    src: k8s_modules.conf
+    dest: /etc/modules-load.d/
+
+- name: Explicitly load netfilter module for k8s
+  modprobe:
+    name: br_netfilter
+    state: present
+
+- name: Explicitly load overlay module for k8s
+  modprobe:
+    name: overlay
+    state: present
+
+- name: Modify sysctl value
+  copy:
+    src: k8s_sysctl.conf
+    dest: /etc/sysctl.d/
+
+- name: reload sysctl
+  shell: sysctl --system  
+
+- name: install keepalived packages
+  yum:
+    name: keepalived
+    state: present
+
+- name: install haproxy packages
+  yum:
+    name: haproxy
+    state: present
 
 - name: Stop and disable firewalld
   systemd:

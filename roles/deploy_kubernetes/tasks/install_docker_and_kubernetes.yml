@@ -1,0 +1,39 @@
+---
+- name: Remove runc package
+  yum:
+    name: runc
+    state: removed
+
+
+- name: Install Docker and Kubernetes packages
+  yum:
+    name: "{{ packages }}"
+    state: present
+  vars:
+    packages:
+      - docker-ce-19.03.13
+      - kubelet-1.20.5
+      - kubeadm-1.20.5
+      - kubectl-1.20.5
+  register: packages
+
+- name: start kubelet service
+  systemd:
+    name: kubelet
+    state: started
+    enabled: yes
+    masked: no
+  when: packages.rc == 0
+
+- name: update file configuration for Docker
+  copy:
+    src: daemon.json
+    dest: /etc/docker/
+
+- name: start docker service
+  systemd:
+    name: docker
+    state: started
+    enabled: yes
+    masked: no
+  when: packages.rc == 0

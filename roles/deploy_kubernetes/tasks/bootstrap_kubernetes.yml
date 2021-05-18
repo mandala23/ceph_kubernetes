@@ -1,0 +1,115 @@
+---
+
+- name: get hosts from facts
+  set_fact:
+    worker: "{{ hostvars|dict2items|json_query('[].value[].ansible_hostname') }}"
+  run_once: true
+
+- name: get public ip of hosts
+  set_fact:
+    ip_public_pool: "{{ hostvars|dict2items|json_query('[].value[].ansible_default_ipv4[].address') }}"
+  run_once: yes
+
+
+- name: get public secondary ip of hosts
+  set_fact:
+    ip_secondary: "{{ hostvars|dict2items|json_query('[].value[].ansible_ens192.ipv4_secondaries[].address') }}"
+  run_once: true
+
+
+- name: create kubeadm certificate key
+  shell: kubeadm  certs certificate-key
+  register: kubeadm_key
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+
+- name: Bootstrap Kubernetes on first node
+  shell: kubeadm init --control-plane-endpoint="{{ VIP_addr }}":"{{ VIP_port}}" --pod-network-cidr="{{ pod_cidr }}"  --service-cidr="{{ service_cidr }}"  --upload-certs --v=5 --certificate-key "{{ kubeadm_key.stdout }}"
+  register: result
+  until: result.stdout.find("Your Kubernetes control-plane has initialized successfully!") != -1
+  retries: 1
+  delay: 300
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+  ignore_errors: yes
+
+- pause:
+    seconds: 600
+
+- name: create kube directory on all nodes
+  file:
+    path: /root/.kube
+    state: directory
+
+- name: create kubeconfig file on first
+  copy:
+    src: /etc/kubernetes/admin.conf
+    dest: /root/.kube/config
+    owner: root
+    group: root
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: Get Kubernetes Bootstrap command
+  shell: kubeadm token create --print-join-command
+  register: kubeadm_command
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+
+- name: join second node to the cluster
+  shell: "{{ kubeadm_command.stdout }} --control-plane --certificate-key {{ kubeadm_key.stdout }}"
+  register: result
+  until: result.stdout.find("This node has joined the cluster and a new control plane instance was created") != -1
+  retries: 1
+  delay: 300
+  run_once: yes
+  delegate_to: "{{ worker[1] }}"
+
+- pause:
+    seconds: 600
+
+- name: join third node to the cluster
+  shell: "{{ kubeadm_command.stdout }} --control-plane --certificate-key {{ kubeadm_key.stdout }}"
+  register: result
+  until: result.stdout.find("This node has joined the cluster and a new control plane instance was created") != -1
+  retries: 1
+  delay: 300
+  run_once: yes
+  delegate_to: "{{ worker[2] }}"
+
+- name: create kube directory on all nodes
+  file:
+    path: /root/.kube
+    state: directory
+
+- name: create kubeconfig file on all nodes
+  copy:
+    src: /etc/kubernetes/admin.conf
+    dest: /root/.kube/config
+    owner: root
+    group: root
+
+- name: taint all kubernetes control-plane node
+  shell: kubectl taint nodes --all node-role.kubernetes.io/master-
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: copy rbac flannel to apply
+  copy:
+    src: kube-flannel-rbac.yml
+    dest: /root
+
+- name: copy flannel to apply
+  copy:
+    src: kube-flannel.yml
+    dest: /root
+
+- name: apply flannel configuration
+  shell: kubectl apply -f kube-flannel.yml
+  run_once: yes
+  delegate_to: "{{ worker[2] }}"
+
+
+

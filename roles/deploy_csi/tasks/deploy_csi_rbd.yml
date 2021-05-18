@@ -1,0 +1,115 @@
+- name: get hosts from facts
+  set_fact:
+    worker: "{{ hostvars|dict2items|json_query('[].value[].ansible_hostname') }}"
+  run_once: true
+
+
+- name: get public ip of hosts
+  set_fact:
+    ip_public_pool: "{{ hostvars|dict2items|json_query('[].value[].ansible_default_ipv4[].address') }}"
+  run_once: yes
+
+- name: Get Kubernetes ID for RBD Secret
+  shell: ceph auth print-key client.kubernetes
+  register: kubernetes_key
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+
+- name: Import RBD Secret in k8s
+  shell: |
+    cat <<EOF | kubectl apply -f -
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: csi-rbd-secret
+        namespace: default
+      stringData:
+        userID: kubernetes
+        userKey: {{ kubernetes_key.stdout }}
+    EOF
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+
+- name: Get Ceph Cluster FSID
+  shell: monmaptool --print /etc/ceph/monmap | grep fsid | awk '{print $2}'
+  register: ceph_cluster_id
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: Import CSI ConfigMap
+  shell: |
+    cat <<EOF | kubectl apply -f -
+      apiVersion: v1
+      kind: ConfigMap
+      data:
+        config.json: |-
+          [
+            {
+              "clusterID": "{{ ceph_cluster_id.stdout }}",
+               "monitors": [
+                 "{{ worker[0] }}:6789",
+                 "{{ worker[1] }}:6789",
+                 "{{ worker[2] }}:6789"
+               ]
+            }
+          ]
+      metadata:
+        name: ceph-csi-config
+    EOF
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: Import RBAC Authorization in k8s
+  shell: kubectl apply -f "{{ role_path }}/files/rbd/csi-provisioner-rbac.yaml"
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: Import Node CSI Plugin  in k8s
+  shell: kubectl apply -f "{{ role_path }}/files/rbd/csi-nodeplugin-rbac.yaml"
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: Import RBD CSI Plugin Provisionner  in k8s
+  shell: kubectl apply -f "{{ role_path }}/files/rbd/csi-rbdplugin-provisioner.yaml"
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: Import Storage Encryption in k8s
+  shell: kubectl apply -f "{{ role_path }}/files/rbd/kms-config.yaml"
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: Import RBD CSI Plugin  in k8s
+  shell: kubectl apply -f "{{ role_path }}/files/rbd/csi-rbdplugin.yaml"
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- pause:
+    seconds: 600
+
+- name: Create Storage Class on RDB Pool
+  shell: |
+    cat <<EOF | kubectl apply -f -
+      apiVersion: storage.k8s.io/v1
+      kind: StorageClass
+      metadata:
+        name: csi-rbd-sc
+      provisioner: rbd.csi.ceph.com
+      parameters:
+        clusterID: {{ ceph_cluster_id.stdout }}
+        pool: kubernetes_blockdevice
+        csi.storage.k8s.io/provisioner-secret-name: csi-rbd-secret
+        csi.storage.k8s.io/provisioner-secret-namespace: default
+        csi.storage.k8s.io/node-stage-secret-name: csi-rbd-secret
+        csi.storage.k8s.io/node-stage-secret-namespace: default
+        csi.storage.k8s.io/controller-expand-secret-name: csi-rbd-secret
+        csi.storage.k8s.io/controller-expand-secret-namespace: default
+      reclaimPolicy: Retain
+      allowVolumeExpansion: true
+      mountOptions:
+        - discard
+    EOF
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"

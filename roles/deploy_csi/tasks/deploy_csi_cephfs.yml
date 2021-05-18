@@ -1,0 +1,100 @@
+---
+
+- name: get hosts from facts
+  set_fact:
+    worker: "{{ hostvars|dict2items|json_query('[].value[].ansible_hostname') }}"
+  run_once: true
+
+
+- name: get public ip of hosts
+  set_fact:
+    ip_public_pool: "{{ hostvars|dict2items|json_query('[].value[].ansible_default_ipv4[].address') }}"
+  run_once: yes
+
+  
+- name: Get Kubernetes ID for CephFS Secret
+  shell: ceph auth print-key client.kubernetes
+  register: kubernetes_key
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: Get Admin ID for CephFS Secret
+  shell: ceph auth print-key client.admin
+  register: admin_key
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+
+- name: Import CephFS Secret in k8s
+  shell: |
+    cat <<EOF | kubectl apply -f -
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: csi-cephfs-secret
+        namespace: default
+      stringData:
+        userID: kubernetes
+        userKey: {{ kubernetes_key.stdout }}
+        adminID: admin
+        adminKey: {{ admin_key.stdout }}
+    EOF
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"  
+  
+- name: Import RBAC Authorization in k8s
+  shell: kubectl apply -f "{{ role_path }}/files/cephfs/csi-provisioner-rbac.yaml"
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: Import Node CSI Plugin  in k8s
+  shell: kubectl apply -f "{{ role_path }}/files/cephfs/csi-nodeplugin-rbac.yaml"
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: Import CephFS CSI Plugin Provisionner  in k8s
+  shell: kubectl apply -f "{{ role_path }}/files/cephfs/csi-cephfsplugin-provisioner.yaml"
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: Import CephFS CSI Plugin  in k8s
+  shell: kubectl apply -f "{{ role_path }}/files/cephfs/csi-cephfsplugin.yaml"
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- pause:
+    seconds: 300
+
+
+- name: Get Ceph Cluster FSID
+  shell: monmaptool --print /etc/ceph/monmap | grep fsid | awk '{print $2}'
+  register: ceph_cluster_id
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+  
+- name: Create Storage Class on CephFS Pool
+  shell: |
+    cat <<EOF | kubectl apply -f -
+      apiVersion: storage.k8s.io/v1
+      kind: StorageClass
+      metadata:
+        name: csi-cephfs-sc
+      provisioner: cephfs.csi.ceph.com
+      parameters:
+        clusterID: {{ ceph_cluster_id.stdout }}
+        fsName: cephfs
+        mounter: kernel
+        csi.storage.k8s.io/provisioner-secret-name: csi-cephfs-secret
+        csi.storage.k8s.io/provisioner-secret-namespace: default
+        csi.storage.k8s.io/controller-expand-secret-name: csi-cephfs-secret
+        csi.storage.k8s.io/controller-expand-secret-namespace: default
+        csi.storage.k8s.io/node-stage-secret-name: csi-cephfs-secret
+        csi.storage.k8s.io/node-stage-secret-namespace: default
+      reclaimPolicy: Retain
+      allowVolumeExpansion: true
+      mountOptions:
+        - debug
+    EOF
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"

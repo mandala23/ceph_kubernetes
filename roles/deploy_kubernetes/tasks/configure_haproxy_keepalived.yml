@@ -1,0 +1,242 @@
+---
+
+- name: get hosts from facts
+  set_fact:
+    worker: "{{ hostvars|dict2items|json_query('[].value[].ansible_hostname') }}"
+  run_once: true
+
+- name: get private ip of hosts
+  set_fact:
+    ipl: "{{ hostvars|dict2items|json_query('[].value[].ansible_ens256.ipv4[].address') }}"
+  run_once: true
+
+- name: get public ip of hosts
+  set_fact:
+    ip_public_pool: "{{ hostvars|dict2items|json_query('[].value[].ansible_default_ipv4[].address') }}"
+  run_once: yes
+
+
+- name: get public secondary ip of hosts
+  set_fact:
+    ip_secondary: "{{ hostvars|dict2items|json_query('[].value[].ansible_ens192.ipv4_secondaries[].address') }}"
+  run_once: true
+
+- name: create haproxy configuration
+  shell: |
+    cat <<EOF > /etc/haproxy/haproxy.cfg
+    global
+      log /dev/log  local0 warning
+      chroot      /var/lib/haproxy
+      pidfile     /var/run/haproxy.pid
+      maxconn     4000
+      user        haproxy
+      group       haproxy
+      daemon
+
+    stats socket /var/lib/haproxy/stats
+
+    defaults
+      mode http
+      log global
+      option  httplog
+      option  dontlognull
+      timeout connect 5s
+      timeout client 4h
+      timeout server 4h
+
+    frontend kube-apiserver
+      bind  *:{{ VIP_port }}
+      mode tcp
+      option tcplog
+      default_backend kube-apiserver
+
+    backend kube-apiserver
+      mode tcp
+      option tcplog
+      option tcp-check
+      balance roundrobin
+      default-server inter 10s downinter 5s rise 2 fall 2 slowstart 60s maxconn 250 maxqueue 256 weight 100
+      server kube-apiserver-1 {{ ip_public_pool[0] }}:6443 check
+      server kube-apiserver-2 {{ ip_public_pool[1] }}:6443 check
+      server kube-apiserver-3 {{ ip_public_pool[2] }}:6443 check
+    EOF
+  args:
+    removes: /etc/haproxy/haproxy.cfg
+  register: haproxy_state
+
+- name: Start Haproxy
+  systemd:
+    name: haproxy
+    state: restarted
+    enabled: yes
+    masked: no
+  when: haproxy_state.rc == 0
+
+- name: create keepalived configuration on first node
+  shell: |
+    cat << EOF > /etc/keepalived/keepalived.conf
+    global_defs {
+      router_id 50
+      no_email_faults
+      default_interface {{ main_interface }}
+      vrrp_skip_check_adv_addr
+      vrrp_check_unicast_src
+    }
+
+
+    vrrp_script chk_haproxy {
+      script "killall -0 haproxy"
+      interval 2
+      weight 2
+    }
+
+    vrrp_instance VI_1 {
+      state MASTER
+      interface {{ main_interface }}
+      virtual_router_id 50
+      priority 200
+      authentication {
+        auth_type PASS
+        auth_pass 42
+    }
+      unicast_src_ip {{ ip_secondary[0] }}
+      unicast_peer {
+      {{ ip_secondary[1] }}
+      {{ ip_secondary[2] }}
+      }
+      virtual_ipaddress {
+        {{ VIP_addr }}/32 dev {{ VIP_interface }}
+      }
+      track_script {
+        chk_haproxy
+      }
+    }
+    EOF
+  args:
+    removes: /etc/keepalived/keepalived.conf
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+  register: keepalived_state
+
+
+- name: Start Keepalived on first node
+  systemd:
+    name: keepalived
+    state: restarted
+    enabled: yes
+    masked: no
+  when: keepalived_state.rc == 0
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: create keepalived configuration on second node
+  shell: |
+    cat << EOF > /etc/keepalived/keepalived.conf
+    global_defs {
+      router_id 50
+      no_email_faults
+      default_interface {{ main_interface }}
+      vrrp_skip_check_adv_addr
+      vrrp_check_unicast_src
+    }
+
+
+    vrrp_script chk_haproxy {
+      script "killall -0 haproxy"
+      interval 2
+      weight 2
+    }
+
+    vrrp_instance VI_1 {
+      state BACKUP
+      interface {{ main_interface }}
+      virtual_router_id 50
+      priority 150
+      authentication {
+        auth_type PASS
+        auth_pass 42
+    }
+      unicast_src_ip {{ ip_secondary[1] }}
+      unicast_peer {
+      {{ ip_secondary[0] }}
+      {{ ip_secondary[2] }}
+      }
+      virtual_ipaddress {
+        {{ VIP_addr }}/32 dev {{ VIP_interface }}
+      }
+      track_script {
+        chk_haproxy
+      }
+    }
+    EOF
+  args:
+    removes: /etc/keepalived/keepalived.conf
+  run_once: yes
+  delegate_to: "{{ worker[1] }}"
+  register: keepalived_state
+
+- name: Start Keepalived on second node
+  systemd:
+    name: keepalived
+    state: restarted
+    enabled: yes
+    masked: no
+  when: keepalived_state.rc == 0
+  run_once: yes
+  delegate_to: "{{ worker[1] }}"
+
+- name: create keepalived configuration on third node
+  shell: |
+    cat << EOF > /etc/keepalived/keepalived.conf
+    global_defs {
+      router_id 50
+      no_email_faults
+      default_interface {{ main_interface }}
+      vrrp_skip_check_adv_addr
+      vrrp_check_unicast_src
+    }
+
+
+    vrrp_script chk_haproxy {
+      script "killall -0 haproxy"
+      interval 2
+      weight 2
+    }
+
+    vrrp_instance VI_1 {
+      state BACKUP
+      interface {{ main_interface }}
+      virtual_router_id 50
+      priority 100
+      authentication {
+        auth_type PASS
+        auth_pass 42
+    }
+      unicast_src_ip {{ ip_secondary[2] }}
+      unicast_peer {
+      {{ ip_secondary[0] }}
+      {{ ip_secondary[1] }}
+      }
+      virtual_ipaddress {
+        {{ VIP_addr }}/32 dev {{ VIP_interface }}
+      }
+      track_script {
+        chk_haproxy
+      }
+    }
+    EOF
+  args:
+    removes: /etc/keepalived/keepalived.conf
+  run_once: yes
+  delegate_to: "{{ worker[2] }}"
+  register: keepalived_state
+
+- name: Start Keepalived on second node
+  systemd:
+    name: keepalived
+    state: restarted
+    enabled: yes
+    masked: no
+  when: keepalived_state.rc == 0
+  run_once: yes
+  delegate_to: "{{ worker[2] }}"

@@ -1,0 +1,32 @@
+---
+
+- name: get hosts from facts
+  set_fact:
+    worker: "{{ hostvars|dict2items|json_query('[].value[].ansible_hostname') }}"
+  run_once: true
+
+- name: get public ip of hosts
+  set_fact:
+    ip_public_pool: "{{ hostvars|dict2items|json_query('[].value[].ansible_default_ipv4[].address') }}"
+  run_once: yes
+
+
+- name: Import ClusterRoleBinding in k8s
+  shell: kubectl apply -f "{{ role_path }}/files/cluster_role_bind_dashboard.yaml"
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: Import Service Account in k8s
+  shell: kubectl apply -f "{{ role_path }}/files/service_account_dashboard.yaml"
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: Deploy Kubernetes Dashboard in k8s
+  shell: kubectl apply -f "{{ role_path }}/files/kubernetes-dashboard.yaml"
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: Deploy Metrics Server in k8s
+  shell: kubectl apply -f "{{ role_path }}/files/metrics-server.yaml"
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
