@@ -1,0 +1,11 @@
+---
+
+- include_tasks: post_tasks_keepalived.yml
+
+- include_tasks: post_task_gitlab.yml
+
+- include_tasks: update_k8s_ceph_dashboard_certificate.yml
+
+- include_tasks: instantiate_cron_k8s_renew_certificate.yml
+
+- include_tasks: disabled_repo.yml

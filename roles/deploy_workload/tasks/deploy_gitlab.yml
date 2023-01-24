@@ -1,0 +1,85 @@
+---
+
+- name: get hosts from facts
+  set_fact:
+    worker: "{{ hostvars|dict2items|json_query('[].value[].ansible_hostname') }}"
+  run_once: true
+
+- name: get public ip of hosts
+  set_fact:
+    ip_public_pool: "{{ hostvars|dict2items|json_query('[].value[].ansible_default_ipv4[].address') }}"
+  run_once: yes
+
+- name: Check if Docker-compose Binary is already present
+  stat:
+    path: /usr/local/bin/docker-compose
+  register: dc_state
+
+- name: Get Linux Distro
+  shell: uname -s
+  register: distro
+
+- name: get architecture
+  shell: uname -m
+  register: archi
+
+- name: Download Docker compose Binary
+  get_url:
+    url: "https://github.com/docker/compose/releases/download/1.28.5/docker-compose-{{ distro.stdout }}-{{ archi.stdout }}"
+    dest: /usr/local/bin/docker-compose
+    mode: '0744'
+  register: result
+  when: dc_state.stat.exists == false
+
+
+- name: Create Symbolic Link to Docker Compose Binary
+  file:
+    src: /usr/local/bin/docker-compose
+    dest: /bin/docker-compose
+    owner: root
+    group: root
+    state: link
+  when: dc_state.stat.exists == false
+
+- name: check if gitlab docker-compose file exists
+  stat:
+    path: /mnt/ceph/docker-compose.yml
+  register: compose_state
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+
+- name: Create Gitlab Docker-Compose File
+  shell: |
+    cat << EOF > /mnt/ceph/docker-compose.yml
+      web:
+        image: 'gitlab/gitlab-ce:13.12.0-ce.0'
+        restart: always
+        container_name: gitlab
+        hostname: '{{ gitlab_dns }}'
+        environment:
+          GITLAB_OMNIBUS_CONFIG: |
+            external_url 'http://{{ gitlab_dns }}'
+            gitlab_rails['gitlab_shell_ssh_port'] = 22
+        ports:
+          - "{{ ip_public_pool[0] }}:2222:22"
+          - "{{ ip_public_pool[0] }}:80:80"
+          - "{{ ip_public_pool[0] }}:443:443"
+          - "{{ ip_public_pool[0] }}:5050:5050"
+        volumes:
+          - '/mnt/ceph/gitlab/data:/var/opt/gitlab'
+          - '/mnt/ceph/gitlab/logs:/var/log/gitlab'
+          - '/mnt/ceph/gitlab/config:/etc/gitlab'
+    EOF
+  register: docker
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+  when: compose_state.stat.exists == false
+
+- name: Instantiate gitlab on first node
+  shell: cd /mnt/ceph && docker-compose up -d
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+
+

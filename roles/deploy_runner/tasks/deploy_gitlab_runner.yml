@@ -1,0 +1,152 @@
+---
+
+- name: get hosts from facts
+  set_fact:
+    worker: "{{ hostvars|dict2items|json_query('[].value[].ansible_hostname') }}"
+  run_once: true
+
+
+- name: dowload helm on each node
+  get_url:
+    url: https://get.helm.sh/helm-v3.5.3-linux-amd64.tar.gz
+    dest: /tmp/helm-v3.5.3-linux-amd64.tar.gz
+    mode: '0440'
+
+- name: Extrat helm files
+  unarchive:
+    src: /tmp/helm-v3.5.3-linux-amd64.tar.gz
+    dest: /tmp/
+
+- name: install helm on each node
+  copy:
+    src: /tmp/linux-amd64/helm
+    dest: /usr/local/bin/helm
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: initialize helm with gitlab repo
+  shell: helm repo add gitlab https://charts.gitlab.io
+
+
+- name: check if gitlab namespace already exists
+  shell: kubectl get namespace gitlab-managed-apps
+  register: namespace
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+  ignore_errors: yes
+ 
+
+- name: create gitlab dedicated namespace
+  shell: kubectl create namespace gitlab-managed-apps
+  when: namespace.rc != 0
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: check if secret for gitlab runner is already deployed
+  shell: kubectl get secret gitlab-runner -n gitlab-managed-apps
+  register: secret
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+  ignore_errors: yes
+
+
+- name: create secret for gitlab runner
+  shell:  kubectl create secret generic gitlab-runner --from-file="{{ role_path }}/files/{{ key }}" --from-file="{{ role_path }}/files/{{ certificate }}" -n gitlab-managed-apps
+  when: secret.rc != 0
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+
+- name: create cluster role for gitlab-runner
+  shell: kubectl apply -f "{{ role_path }}/files/cluster_role_gitlab_runner.yaml"
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+
+- name: update gitlab configuration
+  shell: |
+    cat << EOF > /mnt/ceph/runner.yaml
+    image: gitlab/gitlab-runner:alpine-bleeding
+    imagePullPolicy: IfNotPresent
+    imagePullSecrets:
+      - name: "regcred"
+    replicas: 1
+    gitlabUrl: https://{{ gitlab_dns }}/
+    runnerRegistrationToken: "{{ runner_token }}"
+    unregisterRunners: true
+    terminationGracePeriodSeconds: 3600
+    certsSecretName: gitlab-runner
+    concurrent: 300
+    checkInterval: 30
+    logLevel: info
+    rbac:
+      create: false
+      rules: []
+      clusterWideAccess: true
+      serviceAccountName: supergit
+      podSecurityPolicy:
+        enabled: false
+        resourceNames:
+        - gitlab-runner
+    metrics:
+      enabled: true
+    runners:
+      config: |
+        [[runners]]
+          [runners.kubernetes]
+            image = "ubuntu:16.04"
+            pull_policy = "always"
+            privileged = true
+            [[runners.kubernetes.volumes.host_path]]
+              name = "docker"
+              mount_path = "/var/run/docker.sock"
+              read_only = false
+              host_path = "/var/run/docker.sock"
+            [[runners.kubernetes.volumes.host_path]]
+              name = "dockerlib"
+              mount_path = "/var/lib/docker"
+              read_only = false
+              host_path = "/var/lib/docker"
+            [[runners.kubernetes.volumes.host_path]]
+                name = "hostpath-1"
+                mount_path = "/etc/hosts"
+                read_only = true
+                host_path = "/etc/hosts"
+      executor: kubernetes
+      image: ubuntu:16.04
+      privileged: true
+      imagePullSecrets:
+      - [regcred]
+      requestConcurrency: 10
+      locked: false
+      tags: "run-oatp"
+      name: "runner-oatp"
+      privileged: true
+      namespace: gitlab-managed-apps
+      cache: {}
+      builds: {}
+      services: {}
+      helpers: {}
+    securityContext:
+      runAsUser: 100
+      fsGroup: 65533
+    resources: {}
+    affinity: {}
+    nodeSelector: {}
+    tolerations: []
+    hostAliases: []
+    podAnnotations: {}
+    podLabels: {}
+    secrets: []
+    configMaps: {}
+    EOF
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: Deploy gitlab-runner with helm
+  shell: helm install --namespace gitlab-managed-apps  gitlab-runner -f /mnt/ceph/runner.yaml  --version 0.27.0 gitlab/gitlab-runner
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+

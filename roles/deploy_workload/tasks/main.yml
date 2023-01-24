@@ -2,3 +2,5 @@
 
 - include_tasks: deploy_k8_dashboard.yml
 
+- include_tasks: deploy_gitlab.yml
+

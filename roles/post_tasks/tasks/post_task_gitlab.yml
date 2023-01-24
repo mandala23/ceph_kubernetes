@@ -1,0 +1,114 @@
+---
+
+- name: get hosts from facts
+  set_fact:
+    worker: "{{ hostvars|dict2items|json_query('[].value[].ansible_hostname') }}"
+  run_once: true
+
+- name: update gitlab configuration
+  shell: |
+    cat << EOF > /mnt/ceph/gitlab/config/gitlab.rb
+    external_url 'https://{{ gitlab_dns }}'
+    gitlab_rails['gitlab_default_projects_features_builds'] = true
+    gitlab_rails['pipeline_schedule_worker_cron'] = "* * * * *"
+    registry_external_url 'https://{{ gitlab_dns }}:5050'
+    registry['debug_addr'] = "localhost:5001"
+    nginx['enable'] = true
+    nginx['client_max_body_size'] = '250m'
+    nginx['redirect_http_to_https'] = false
+    nginx['redirect_http_to_https_port'] = 443
+    nginx['ssl_certificate'] = "/etc/gitlab/ssl/#{node['fqdn']}.crt"
+    nginx['ssl_certificate_key'] = "/etc/gitlab/ssl/#{node['fqdn']}.key"
+    registry_nginx['enable'] = true
+    letsencrypt['enable'] = false
+    EOF
+  args:
+    removes: /mnt/ceph/gitlab/config/gitlab.rb
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: create SSL directory for gitlab
+  file:
+    path: /mnt/ceph/gitlab/config/ssl
+    owner: root
+    group: root
+    mode: '0755'
+    state: directory
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: copy ssl certificate to gitlab instance
+  copy:
+    src: "{{ role_path }}/files/{{ item }}"
+    dest: "/mnt/ceph/gitlab/config/ssl/{{ item }}"
+    owner: root
+    group: root
+    mode: '0644'
+  with_items:
+    - "{{ certificate }}"
+    - "{{ key }}"
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: get Docker ID of gitlab instance
+  shell: docker ps -a  | grep gitlab | awk '{print $1}'
+  register: docker_id
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: reload gitlab configuration
+  shell: docker exec -ti "{{ docker_id.stdout }}" /opt/gitlab/bin/gitlab-ctl reconfigure
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+
+- name: reconfigure docker daemon on each node to user registry
+  shell: |
+    cat << EOF > /etc/docker/daemon.json
+    {
+      "exec-opts": ["native.cgroupdriver=systemd"],
+      "log-driver": "json-file",
+      "log-opts": {
+        "max-size": "100m"
+      },
+     "storage-driver": "overlay2",
+      "insecure-registries" : ["{{ gitlab_dns }}:5050"]
+    }
+    EOF
+  args:
+    removes: /etc/docker/daemon.json
+
+- name: Create Certificate directory on Docker
+  file:
+    path: "/etc/docker/certs.d/{ gitlab_dns }}:5050"
+    state: directory
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Import Gitlab certificate in Docker configuration
+  copy:
+    src: "{{ role_path }}/files/{{ certificate }}"
+    dest: "/etc/docker/certs.d/{ gitlab_dns }}:5050/ca.crt"
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Import Gitlab certificate in System Certificate configuration
+  copy:
+    src: "{{ role_path }}/files/{{ certificate }}"
+    dest: "/etc/pki/ca-trust/source/anchors/ca.crt"
+    owner: root
+    group: root
+    mode: '0644'
+
+
+- name: install additionnal packages to manages certificates
+  yum:
+    name: ca-certificates
+    state: latest
+
+- name: update ca-certificate on all nodes
+  shell: update-ca-trust extract
+  notify:
+    - restart_docker

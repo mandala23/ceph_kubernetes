@@ -1,0 +1,5 @@
+---
+gitlab_dns: gitlab-oatp.sii.fr
+certificate: gitlab-oatp.sii.fr.crt
+key: gitlab-oatp.sii.fr.key
+runner_token: "9D4svbSeD4EpPxzf2pLX"

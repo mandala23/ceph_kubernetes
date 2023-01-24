@@ -1,0 +1,97 @@
+---
+
+- name: get hosts from facts
+  set_fact:
+    worker: "{{ hostvars|dict2items|json_query('[].value[].ansible_hostname') }}"
+  run_once: true
+
+- name: check if secret with auto-generate k8s dashboard certificate exist
+  shell: kubectl get secrets kubernetes-dashboard-certs -n kubernetes-dashboard
+  register: k8s_cert
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: delete previous secret with auto-generate k8s dashboard certificate
+  shell: kubectl delete secrets kubernetes-dashboard-certs -n kubernetes-dashboard
+  when: k8s_cert.rc == 0
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: create generic secrets for k8s dashboard certificate
+  shell: kubectl create secret generic kubernetes-dashboard-certs --from-file="{{ role_path }}/files/certs" -n kubernetes-dashboard 
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: Copy dashboard YAML to Ceph root directory
+  copy:
+    src: "{{ role_path }}/files/kubernetes-dashboard.yaml"
+    dest: /mnt/ceph/kubernetes-dashboard.yaml
+    owner: root
+    group: root
+    mode: '0750'
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: modify dashboard YAML
+  blockinfile:
+    path: /mnt/ceph/kubernetes-dashboard.yaml
+    insertafter: '            - --auto-generate-certificates'
+    block: |
+      '            - --tls-cert-file=/{{ certificate_dashboard }}'
+      '            - --tls-key-file=/{{ key_dashboard }}'
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: remove quotes from kubernetes dashboard yaml
+  replace:
+    path: /mnt/ceph/kubernetes-dashboard.yaml
+    regexp: '^'''
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: remove quotes from kubernetesdashboard yaml
+  replace:
+    path: /mnt/ceph/kubernetes-dashboard.yaml
+    regexp: 'crt''$'
+    replace: 'crt'
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: remove quotes from kubernetes dashboard yaml
+  replace:
+    path: /mnt/ceph/kubernetes-dashboard.yaml
+    regexp: 'key''$'
+    replace: 'key'
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+
+- name: Apply modified k8s dashboard with certificates
+  shell: kubectl apply -f /mnt/ceph/kubernetes-dashboard.yaml
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+
+- name: update Ceph Manager key
+  shell: ceph dashboard set-ssl-certificate-key -i "{{ role_path }}/files/{{ item }}"
+  with_items:
+    - "{{ key_ceph }}"
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+
+- name: update Ceph Manager certificate
+  shell: ceph dashboard set-ssl-certificate -i "{{ role_path }}/files/{{ item }}"
+  with_items:
+    - "{{ certificate_ceph }}"
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"
+
+- name: Set Ceph Manager Server Name
+  shell:  ceph config set mgr mgr/dashboard/server_addr "{{ item }}"
+  with_items:
+    - "{{ ceph_fqdn }}"
+  delegate_to: "{{ worker[0] }}"
+  notify:
+    - restart_ceph_mgr
+

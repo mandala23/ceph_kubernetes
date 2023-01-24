@@ -1,0 +1,9 @@
+---
+
+- name: 
+  replace:
+    path: /etc/ssh/sshd_config
+    regexp: PermitRootLogin yes
+    replace: PermitRootLogin no
+  notify:
+    - restart_sshd

@@ -1,7 +1,7 @@
 ---
-VIP_addr: 192.168.0.233
+VIP_addr: 10.9.70.118
 VIP_interface: ens224
 main_interface: ens192
 VIP_port: 7443
-pod_cidr: 10.100.0.0/16
+pod_cidr: 10.100.0.0/16 
 service_cidr: 10.32.0.0/12

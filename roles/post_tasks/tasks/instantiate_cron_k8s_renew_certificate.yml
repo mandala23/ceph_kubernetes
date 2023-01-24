@@ -1,0 +1,35 @@
+---
+
+- name: get hosts from facts
+  set_fact:
+    worker: "{{ hostvars|dict2items|json_query('[].value[].ansible_hostname') }}"
+  run_once: true
+
+
+- name: create cron jobs for k8s certificate renewal
+  cron:
+    name: "renews kubernetes certificates"
+    minute: "0"
+    hour: "1"
+    month: "1"
+    day: "1"
+    user: root
+    job: "kubeadm certs renew all"
+    cron_file: k8s_renew_certs
+    state: present
+    disabled: no
+
+- name: create cron jobs for k8s control plane reboot
+  cron:
+    name: "restart k8s control plane pods"
+    minute: "0"
+    hour: "2"
+    month: "1"
+    day: "1"
+    user: root
+    job: "for i in $(kubectl get pods -n kube-system  | egrep '(etcd|kube-apiserver|kube-controller|kube-scheduler)' | awk '{print $1}'); do kubectl delete pods $i -n kube-system && sleep 30: done"
+    cron_file: k8s_relaunch_control_plane
+    state: present
+    disabled: no
+  run_once: yes
+  delegate_to: "{{ worker[0] }}"

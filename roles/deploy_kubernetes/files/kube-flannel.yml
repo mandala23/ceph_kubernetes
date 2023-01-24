@@ -125,7 +125,7 @@ data:
     }
   net-conf.json: |
     {
-      "Network": "10.244.0.0/16",
+      "Network": "10.100.0.0/16",
       "Backend": {
         "Type": "vxlan"
       }
@@ -194,7 +194,7 @@ spec:
             cpu: "100m"
             memory: "50Mi"
         securityContext:
-          privileged: false
+          privileged: true
           capabilities:
             add: ["NET_ADMIN", "NET_RAW"]
         env:

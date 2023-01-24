@@ -49,9 +49,9 @@
             {
               "clusterID": "{{ ceph_cluster_id.stdout }}",
                "monitors": [
-                 "{{ worker[0] }}:6789",
-                 "{{ worker[1] }}:6789",
-                 "{{ worker[2] }}:6789"
+                 "{{ ip_public_pool[0] }}:6789",
+                 "{{ ip_public_pool[1] }}:6789",
+                 "{{ ip_public_pool[2] }}:6789"
                ]
             }
           ]

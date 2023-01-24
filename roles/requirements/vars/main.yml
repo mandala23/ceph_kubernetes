@@ -1,3 +1,4 @@
 ---
 chrony_pool:
-  - "2.centos.pool.ntp.org"
+  - "10.9.1.26"
+  - "10.9.1.30"

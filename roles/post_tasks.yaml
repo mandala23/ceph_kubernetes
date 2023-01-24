@@ -1,4 +1,4 @@
 ---
 - hosts: nodes
   roles:
-    - deploy_workload
+    - post_tasks

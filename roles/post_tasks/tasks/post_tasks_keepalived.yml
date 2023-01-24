@@ -1,0 +1,67 @@
+---
+
+- name: get hosts from facts
+  set_fact:
+    worker: "{{ hostvars|dict2items|json_query('[].value[].ansible_hostname') }}"
+  run_once: true
+
+- name: get private ip of hosts
+  set_fact:
+    ipl: "{{ hostvars|dict2items|json_query('[].value[].ansible_ens256.ipv4[].address') }}"
+  run_once: true
+
+- name: get public ip of hosts
+  set_fact:
+    ip_public_pool: "{{ hostvars|dict2items|json_query('[].value[].ansible_default_ipv4[].address') }}"
+  run_once: yes
+
+
+- name: create keepalived checkscript on all nodes
+  shell: |
+    cat << EOF > /etc/keepalived/check_apiserver.sh
+    #!/bin/sh
+
+    errorExit() {
+      echo "*** $*" 1>&2
+      exit 1
+    }
+
+    curl --silent --max-time 2 --insecure https://localhost:7443/ -o /dev/null || errorExit "Error GET https://localhost:7443/"
+    if ip addr | grep -q {{ VIP_addr }}; then
+      curl --silent --max-time 2 --insecure https://{{ VIP_addr }}:7443/ -o /dev/null || errorExit "Error GET https://{{ VIP_addr }}:7443/"
+    fi
+    EOF
+  args:
+    creates: /etc/keepalived/check_apiserver.sh
+
+- name: change privileges on script
+  file:
+    path: /etc/keepalived/check_apiserver.sh
+    owner: root
+    group: root
+    mode: '0740'
+
+
+- name: add check to keepalived configuration
+  blockinfile:
+    path: /etc/keepalived/keepalived.conf
+    marker: "<!-- {mark} ANSIBLE MANAGED BLOCK -->"
+    insertafter: '^$'
+    block: |
+      vrrp_script check_apiserver {
+        script /etc/keepalived/check_apiserver.sh
+        interval 2
+        fall 2
+        rise 2
+      }
+
+- name: modifiy keepalived configuration
+  blockinfile:
+    path: /etc/keepalived/keepalived.conf
+    insertafter: '  track_script {'
+    block: |
+      check_apiserver
+  notify:
+    - restart_keepalived
+
+
